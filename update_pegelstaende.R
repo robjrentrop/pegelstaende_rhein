@@ -40,20 +40,25 @@ hole_messwerte <- function(uuid, tage, versuche = 3, wartezeit_sek = 5) {
   url <- sprintf("%s/stations/%s/W/measurements.json?start=P%dD", api_base, uuid, tage)
 
   for (versuch in seq_len(versuche)) {
-    ergebnis <- tryCatch(
-      list(erfolg = TRUE, daten = fromJSON(url, simplifyVector = TRUE)),
-      error = function(e) list(erfolg = FALSE, fehler = conditionMessage(e))
-    )
+    ergebnis <- tryCatch({
+      daten <- fromJSON(url, simplifyVector = TRUE)
+      if (is.data.frame(daten) && nrow(daten) > 0 &&
+          all(c("timestamp", "value") %in% names(daten))) {
+        list(
+          erfolg = TRUE,
+          df = data.frame(
+            timestamp = as.POSIXct(daten$timestamp, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+            wert_cm   = as.numeric(daten$value)
+          )
+        )
+      } else {
+        list(erfolg = FALSE, fehler = "unerwartete oder leere Antwortstruktur")
+      }
+    }, error = function(e) list(erfolg = FALSE, fehler = conditionMessage(e)))
 
-    if (isTRUE(ergebnis$erfolg) && length(ergebnis$daten) > 0 && nrow(ergebnis$daten) > 0) {
-      return(data.frame(
-        timestamp = as.POSIXct(ergebnis$daten$timestamp, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
-        wert_cm   = as.numeric(ergebnis$daten$value)
-      ))
-    }
+    if (isTRUE(ergebnis$erfolg)) return(ergebnis$df)
 
-    grund <- if (isTRUE(ergebnis$erfolg)) "leere Antwort" else ergebnis$fehler
-    message(sprintf("  Versuch %d/%d für %s fehlgeschlagen (%s)", versuch, versuche, uuid, grund))
+    message(sprintf("  Versuch %d/%d für %s fehlgeschlagen (%s)", versuch, versuche, uuid, ergebnis$fehler))
     if (versuch < versuche) Sys.sleep(wartezeit_sek)
   }
 
@@ -76,18 +81,24 @@ if (nrow(alle) == 0) {
   quit(status = 0)  # bewusst KEIN Fehler-Exit-Code, damit GitHub Actions das nicht als roten Fehlschlag meldet
 }
 
-if (AUFLOESUNG_STUNDEN) {
-  alle <- alle %>%
-    mutate(timestamp = as.POSIXct(format(timestamp, "%Y-%m-%d %H:00:00"), tz = "UTC")) %>%
-    group_by(pegel, timestamp) %>%
-    summarise(wert_cm = mean(wert_cm, na.rm = TRUE), .groups = "drop")
-}
+tryCatch({
+  if (AUFLOESUNG_STUNDEN) {
+    alle <- alle %>%
+      mutate(timestamp = as.POSIXct(format(timestamp, "%Y-%m-%d %H:00:00"), tz = "UTC")) %>%
+      group_by(pegel, timestamp) %>%
+      summarise(wert_cm = mean(wert_cm, na.rm = TRUE), .groups = "drop")
+  }
 
-breit <- alle %>%
-  pivot_wider(names_from = pegel, values_from = wert_cm) %>%
-  arrange(timestamp) %>%
-  rename(Datum = timestamp)
+  breit <- alle %>%
+    pivot_wider(names_from = pegel, values_from = wert_cm) %>%
+    arrange(timestamp) %>%
+    rename(Datum = timestamp)
 
-write.csv(breit, ausgabe_pfad, row.names = FALSE)
-message(sprintf("Geschrieben: %s (%d Zeilen, Stand %s)", ausgabe_pfad, nrow(breit),
-                 format(Sys.time(), "%d.%m.%Y %H:%M:%S")))
+  write.csv(breit, ausgabe_pfad, row.names = FALSE)
+  message(sprintf("Geschrieben: %s (%d Zeilen, Stand %s)", ausgabe_pfad, nrow(breit),
+                   format(Sys.time(), "%d.%m.%Y %H:%M:%S")))
+}, error = function(e) {
+  message("Fehler beim Verarbeiten/Schreiben der Daten: ", conditionMessage(e))
+  message("Bestehende CSV bleibt unangetastet.")
+  quit(status = 1)  # das hier IST ein echter Bug-Fall, nicht nur ein API-Aussetzer -> sichtbarer Fehlschlag ist gewollt
+})
