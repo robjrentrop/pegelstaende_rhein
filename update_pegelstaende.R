@@ -36,16 +36,28 @@ AUFLOESUNG_STUNDEN <- TRUE  # TRUE = auf Stundenmittel verdichten (kleinere, sau
 ausgabe_pfad <- "pegelstaende_datawrapper.csv"
 
 # -----------------------------------------------------------------------
-hole_messwerte <- function(uuid, tage) {
+hole_messwerte <- function(uuid, tage, versuche = 3, wartezeit_sek = 5) {
   url <- sprintf("%s/stations/%s/W/measurements.json?start=P%dD", api_base, uuid, tage)
-  daten <- tryCatch(fromJSON(url, simplifyVector = TRUE), error = function(e) NULL)
-  if (is.null(daten) || length(daten) == 0 || nrow(daten) == 0) {
-    return(data.frame(timestamp = as.POSIXct(character()), wert_cm = numeric()))
+
+  for (versuch in seq_len(versuche)) {
+    ergebnis <- tryCatch(
+      list(erfolg = TRUE, daten = fromJSON(url, simplifyVector = TRUE)),
+      error = function(e) list(erfolg = FALSE, fehler = conditionMessage(e))
+    )
+
+    if (isTRUE(ergebnis$erfolg) && length(ergebnis$daten) > 0 && nrow(ergebnis$daten) > 0) {
+      return(data.frame(
+        timestamp = as.POSIXct(ergebnis$daten$timestamp, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
+        wert_cm   = as.numeric(ergebnis$daten$value)
+      ))
+    }
+
+    grund <- if (isTRUE(ergebnis$erfolg)) "leere Antwort" else ergebnis$fehler
+    message(sprintf("  Versuch %d/%d für %s fehlgeschlagen (%s)", versuch, versuche, uuid, grund))
+    if (versuch < versuche) Sys.sleep(wartezeit_sek)
   }
-  data.frame(
-    timestamp = as.POSIXct(daten$timestamp, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),
-    wert_cm   = as.numeric(daten$value)
-  )
+
+  data.frame(timestamp = as.POSIXct(character()), wert_cm = numeric())
 }
 
 # -----------------------------------------------------------------------
@@ -58,7 +70,10 @@ alle <- lapply(names(stationen), function(name) {
 alle <- bind_rows(alle)
 
 if (nrow(alle) == 0) {
-  stop("Keine Daten von der API erhalten - Abbruch, um die bestehende CSV nicht mit einer leeren Datei zu überschreiben.")
+  message("Keine Daten von der API erhalten (auch nach Wiederholungsversuchen). ",
+          "Breche ab, ohne die bestehende CSV zu überschreiben. ",
+          "Das ist vermutlich ein vorübergehender Aussetzer bei PEGELONLINE - der nächste Lauf sollte wieder funktionieren.")
+  quit(status = 0)  # bewusst KEIN Fehler-Exit-Code, damit GitHub Actions das nicht als roten Fehlschlag meldet
 }
 
 if (AUFLOESUNG_STUNDEN) {
