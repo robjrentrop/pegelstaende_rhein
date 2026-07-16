@@ -1,0 +1,40 @@
+name: Pegelstände aktualisieren
+
+on:
+  schedule:
+    # alle 30 Minuten. GitHub kann geplante Läufe bei geringer Repo-Aktivität
+    # etwas verzögern - für 15-Minuten-Rohdaten ist das unkritisch.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}   # erlaubt manuelles Auslösen über den "Run workflow"-Button
+
+permissions:
+  contents: write   # nötig, damit die Action die aktualisierte CSV zurückcommitten darf
+
+concurrency:
+  group: pegelstaende-update
+  cancel-in-progress: false   # läuft ein Update bereits, wartet der nächste statt parallel zu laufen
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: R einrichten
+        uses: r-lib/actions/setup-r@v2
+
+      - name: R-Pakete installieren
+        run: Rscript -e 'install.packages(c("jsonlite", "dplyr", "tidyr"))'
+
+      - name: Pegelstände abrufen und CSV erzeugen
+        run: Rscript update_pegelstaende.R
+
+      - name: Aktualisierte CSV committen
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pegelstaende_datawrapper.csv
+          git diff --quiet --cached || git commit -m "Automatisches Update: Pegelstände"
+          git pull --rebase origin main
+          git push
